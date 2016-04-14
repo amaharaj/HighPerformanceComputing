@@ -5,11 +5,11 @@ implicit none
 logical :: init_fail,fail,working
 integer :: i,i_max,k,ierr,numprocs,p,nnwt,nkill,accepted
 integer, allocatable, dimension(:) :: list
-double precision :: z(N+1),T(N+1),th(3),z_prev(N+1),xs(m),alpha
-double precision, allocatable, dimension(:) :: del,r
+double precision :: z(N+1),T(N+1),th(3),z_prev(N+1),xs(m),alpha,maxdelconv,maxdelwillconv
+double precision, allocatable, dimension(:) :: del,r,conv,willconv,prodconv,prodwillconv
 double precision, allocatable, dimension(:,:) :: pred,cur
 
-allocate(del(numprocs-1),r(numprocs-1),list(numprocs-1))
+allocate(del(numprocs-1),r(numprocs-1),list(numprocs-1),conv(numprocs-1),willconv(numprocs-1))
 allocate(pred(N+1,numprocs-1),cur(N+1,numprocs-1))
 
 print *,'Master process starting...'
@@ -31,6 +31,8 @@ init_fail=.true.
 ! Set initial tangent vector: vary only wave speed c
 T=0d0
 T(N)=1d0
+conv=0d0
+willconv=0d0
 
 ! Set the initial distribution of step sizes (experiment with this)
 del(1)=0.1d0
@@ -72,6 +74,9 @@ outter:   do while(i.le.i_max)
       ! Start correction step
 
 inner: do while(working)
+
+        conv=0d0
+        willconv=0d0
          ! Send the predictions to the slaves
          do k=1,numprocs-1
             if(list(k).lt.0) cycle
@@ -97,8 +102,15 @@ inner: do while(working)
             if(r(k).gt.th(1)) then
                list(k)=-1
                nkill=nkill+1
+            else if (r(k).lt.th(3)) then
+               conv(k) = 1
+            else if ((r(k).lt.th(2)).AND.(r(k).gt.th(3))) then
+               willconv(k) = 1
             end if
          end do
+         print *, "conv: ", conv
+         print *, "willconv: ", willconv
+
       ! If all approximate solutions diverged, retry the step with smaller step sizes
          if(nkill.eq.numprocs-1) then
             del=del/alpha**(numprocs-1)
@@ -118,7 +130,7 @@ inner: do while(working)
             end if
          end if
       ! If neither approximate solution has diverged, then ...
-         if(nkill.eq.0) then
+      !   if(nkill.eq.0) then
       ! ... if both have converged, select the one with the largest step size,
             if(minval(r).lt.th(3)) then
                accepted=maxloc(del,1)
@@ -130,10 +142,15 @@ inner: do while(working)
             if(maxval(r).gt.th(2)) then
                cycle inner
             end if
+     !  ... Comments
+            prodconv = conv*del
+            prodwillconv = prodwillconv*del
+            maxdelconv = maxval(prodconv,1)
+            maxdelwillconv = maxval(prodwillconv,1)
       !  ... if one has converged and one will likely converge at the next step, select the one the gives the greatest
       !      increase in arclength.
-            if(minval(r).lt.th(3)) then
-               if(del(1)/real(nnwt,8).gt.del(2)/real(nnwt+1,8)) then
+            if(maxval(r).lt.th(3)) then
+               if(maxdelconv/real(nnwt,8).gt.maxdelwillconv/real(nnwt+1,8)) then
                   accepted=1
                   working=.false.
                   cycle inner
@@ -141,7 +158,7 @@ inner: do while(working)
                   cycle inner
                end if
             end if
-         end if
+       !  end if
       end do inner
 
       ! Accept step
@@ -159,7 +176,7 @@ inner: do while(working)
 end if
 
 close(110)
-deallocate(del,pred,r,cur,list)
+deallocate(del,pred,r,cur,list,conv,willconv)
 end subroutine master
 
 subroutine stop_slaves(numprocs)
