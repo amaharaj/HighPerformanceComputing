@@ -4,9 +4,9 @@ use globals
 implicit none
 logical :: init_fail,fail,working
 integer :: i,i_max,k,ierr,numprocs,p,nnwt,nkill,accepted
-integer, allocatable, dimension(:) :: list
+integer, allocatable, dimension(:) :: list,conv,willconv
 double precision :: z(N+1),T(N+1),th(3),z_prev(N+1),xs(m),alpha,maxdelconv,maxdelwillconv
-double precision, allocatable, dimension(:) :: del,r,conv,willconv,prodconv,prodwillconv
+double precision, allocatable, dimension(:) :: del,r,prodconv,prodwillconv
 double precision, allocatable, dimension(:,:) :: pred,cur
 
 allocate(del(numprocs-1),r(numprocs-1),list(numprocs-1),conv(numprocs-1),willconv(numprocs-1))
@@ -35,7 +35,7 @@ conv=0d0
 willconv=0d0
 
 ! Set the initial distribution of step sizes (experiment with this)
-del(1)=0.1d0
+del(1)=5d0
 alpha=1.5d0
 if(numprocs.gt.2) then
    do i=2,numprocs-1
@@ -46,7 +46,7 @@ i_max=200
 
 ! Set the thresholds that determine whether an approximate solution is diverging,
 ! will likely converge after one more step or is converged
-th(1)=500d0
+th(1)=500
 th(2)=1d-4
 th(3)=1d-9
 
@@ -74,7 +74,7 @@ outter:   do while(i.le.i_max)
       ! Start correction step
 
 inner: do while(working)
-
+        print *, "New DELTA: ", del 
         conv=0d0
         willconv=0d0
          ! Send the predictions to the slaves
@@ -110,10 +110,11 @@ inner: do while(working)
          end do
          print *, "conv: ", conv
          print *, "willconv: ", willconv
-
+         print *, "delta: ", del
+         print *, ""
       ! If all approximate solutions diverged, retry the step with smaller step sizes
          if(nkill.eq.numprocs-1) then
-            del=del/alpha**(numprocs-1)
+            del=del/alpha**(numprocs-1) 
             cycle outter ! Go to the next iteration of the outter loop without adding to point counter i
          end if
       ! If only one approximate solution is left then ...
@@ -131,10 +132,16 @@ inner: do while(working)
          end if
       ! If neither approximate solution has diverged, then ...
       !   if(nkill.eq.0) then
-      ! ... if both have converged, select the one with the largest step size,
-            if(minval(r).lt.th(3)) then
+      ! ... if ALL have converged, select the one with the largest step size,
+            if(maxval(r).lt.th(3)) then
                accepted=maxloc(del,1)
-               del=alpha*del           ! Increase all step sizes
+               print *, "ACCEPTED: ", accepted
+               print *, "DELTA: ", del, "DELTA_ACCEPTED: ", del(accepted)
+               del(1)=del(accepted)               ! Increase all step sizes
+               do k=2,numprocs-1
+                  del(k)=alpha*del(k-1)
+               end do 
+               print *, "INCREASE DELTA: ", del 
                working=.false.
                cycle inner
             end if
@@ -147,22 +154,27 @@ inner: do while(working)
             prodwillconv = prodwillconv*del
             maxdelconv = maxval(prodconv,1)
             maxdelwillconv = maxval(prodwillconv,1)
+            if ((sum(conv)).AND.(sum(willconv)).gt.(0)) then 
       !  ... if one has converged and one will likely converge at the next step, select the one the gives the greatest
       !      increase in arclength.
-            if(maxval(r).lt.th(3)) then
-               if(maxdelconv/real(nnwt,8).gt.maxdelwillconv/real(nnwt+1,8)) then
-                  accepted=1
-                  working=.false.
-                  cycle inner
-               else
-                  cycle inner
+               if(maxval(r).lt.th(3)) then
+                  if(maxdelconv/real(nnwt,8).gt.maxdelwillconv/real(nnwt+1,8)) then
+                     accepted=maxloc(prodconv,1)
+                     working=.false.
+                     cycle inner
+                  else
+                     cycle inner
+                  end if
                end if
-            end if
+            else 
+               working=.false.
+               cycle inner
+            end if 
        !  end if
       end do inner
 
       ! Accept step
-      z=cur(:,1)
+      z=cur(:,accepted)
       print *,'Step accepted, lambda=',z(N+1)
 !     Write lambda, c, solution norm and step size
       write(110,'(i5,4(1x,e17.10))') i,z(N+1),z(N),sqrt(sum(z(1:m)**2)),del(accepted)
