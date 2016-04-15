@@ -5,8 +5,8 @@ implicit none
 logical :: init_fail,fail,working
 integer :: i,i_max,k,ierr,numprocs,p,nnwt,nkill,accepted
 integer, allocatable, dimension(:) :: list,conv,willconv
-double precision :: z(N+1),T(N+1),th(3),z_prev(N+1),xs(m),alpha,maxdelconv,maxdelwillconv
-double precision, allocatable, dimension(:) :: del,r,prodconv,prodwillconv
+double precision :: z(N+1),T(N+1),th(3),z_prev(N+1),xs(m),alpha,maxdelconv,maxdelwillconv,maxlocation(2),prodconv(numprocs-1),prodwillconv(numprocs-1)
+double precision, allocatable, dimension(:) :: del,r!,prodconv,prodwillconv
 double precision, allocatable, dimension(:,:) :: pred,cur
 
 allocate(del(numprocs-1),r(numprocs-1),list(numprocs-1),conv(numprocs-1),willconv(numprocs-1))
@@ -33,6 +33,8 @@ T=0d0
 T(N)=1d0
 conv=0d0
 willconv=0d0
+prodconv=0d0
+prodwillconv=0d0
 
 ! Set the initial distribution of step sizes (experiment with this)
 del(1)=5d0
@@ -114,11 +116,17 @@ inner: do while(working)
          print *, ""
       ! If all approximate solutions diverged, retry the step with smaller step sizes
          if(nkill.eq.numprocs-1) then
+            print *, "~~~"
+            print *, "ALL DIVERGE"
+            print *, "~~~"
             del=del/alpha**(numprocs-1) 
             cycle outter ! Go to the next iteration of the outter loop without adding to point counter i
          end if
       ! If only one approximate solution is left then ...
          if(numprocs-1-nkill.eq.1) then
+            print *, "~~~"
+            print *, "ONLY ONE SOLUTION"
+            print *, "~~~"
             k=minloc(r,1)
       ! ... if it has not yet converged, take another Newton-Raphson step,
             if(r(k).gt.th(3)) then
@@ -130,42 +138,101 @@ inner: do while(working)
                cycle inner
             end if
          end if
+
+      !  ... if one has a residual we are not sure about (i.e. greater than th(2)), take another Newton-Raphson step,
+            
+            if(maxval(r).gt.th(2).AND.(maxval(r).lt.th(1))) then
+               print *, "~~~"
+               print *, "UNSURE ABOUT RESIDUAL"
+               print *, "~~~"
+               print *, "r: ", r, "maxval(r)", maxval(r), "nkill: ", nkill
+               cycle inner
+            end if
+
       ! If neither approximate solution has diverged, then ...
       !   if(nkill.eq.0) then
       ! ... if ALL have converged, select the one with the largest step size,
             if(maxval(r).lt.th(3)) then
+               print *, "~~~"
+               print *, "ALL CONVERGE"
+               print *, "~~~"
                accepted=maxloc(del,1)
+           !    print *, "ACCEPTED: ", accepted
+           !    print *, "DELTA: ", del, "DELTA_ACCEPTED: ", del(accepted)
+               del(1)=del(accepted)               ! Increase all step sizes
+               do k=2,numprocs-1
+                  del(k)=alpha*del(k-1)
+               end do 
+           !    print *, "INCREASE DELTA: ", del 
+               working=.false.
+               cycle inner
+            end if
+     !  ... Comments
+            prodconv=0d0
+            prodwillconv=0d0
+            prodconv = conv*del
+            prodwillconv = willconv*del
+            maxdelconv = maxval(prodconv,1)
+            maxdelwillconv = maxval(prodwillconv,1)
+            maxlocation(1) = maxloc(prodconv,1)
+            maxlocation(2) = maxloc(prodwillconv,1)
+            if (sum(willconv).eq.(numprocs-1)) then
+               print *, "~~~"
+               print *, "ALL WILL CONVERGE"
+               print *, "~~~"
+               accepted=maxloc(prodwillconv,1)
                print *, "ACCEPTED: ", accepted
                print *, "DELTA: ", del, "DELTA_ACCEPTED: ", del(accepted)
                del(1)=del(accepted)               ! Increase all step sizes
                do k=2,numprocs-1
                   del(k)=alpha*del(k-1)
-               end do 
+               end do
                print *, "INCREASE DELTA: ", del 
                working=.false.
                cycle inner
             end if
-      !  ... if one has a residual we are not sure about (i.e. greater than th(2)), take another Newton-Raphson step,
-            if(maxval(r).gt.th(2)) then
-               cycle inner
-            end if
-     !  ... Comments
-            prodconv = conv*del
-            prodwillconv = prodwillconv*del
-            maxdelconv = maxval(prodconv,1)
-            maxdelwillconv = maxval(prodwillconv,1)
             if ((sum(conv)).AND.(sum(willconv)).gt.(0)) then 
       !  ... if one has converged and one will likely converge at the next step, select the one the gives the greatest
+                  print *, "~~~"
+                  print *, "SUM(CONV) AND SUM(WILLCONV) > ZERO"
+                  print *, "~~~"
+
       !      increase in arclength.
-               if(maxval(r).lt.th(3)) then
+              ! if(maxval(r).lt.th(3)) then
                   if(maxdelconv/real(nnwt,8).gt.maxdelwillconv/real(nnwt+1,8)) then
                      accepted=maxloc(prodconv,1)
+                     print *, "ACCEPTED***: ", accepted
+                     print *, "DELTA: ", del, "DELTA_ACCEPTED: ", del(accepted)
+                     del(1)=del(accepted)               ! Increase all step sizes
+                     do k=2,numprocs-1
+                        del(k)=alpha*del(k-1)
+                     end do
+                     print *, "INCREASE DELTA: ", del 
+                     working=.false.
+                     cycle inner
+                  else if (maxdelconv/real(nnwt,8).lt.maxdelwillconv/real(nnwt+1,8)) then
+                     accepted=maxloc(prodwillconv,1)
+                     print *, "ACCEPTED+++: ", accepted
+                     print *, "DELTA: ", del, "DELTA_ACCEPTED: ", del(accepted)
+                     del(1)=del(accepted)               ! Increase all step sizes
+                     do k=2,numprocs-1
+                        del(k)=alpha*del(k-1)
+                     end do
+                     print *, "INCREASE DELTA: ", del
                      working=.false.
                      cycle inner
                   else
+                     accepted=maxloc(maxlocation,1)
+                     print *, "ACCEPTED@@@: ", accepted
+                     print *, "DELTA: ", del, "DELTA_ACCEPTED: ", del(accepted)
+                     del(1)=del(accepted)               ! Increase all step sizes
+                     do k=2,numprocs-1
+                        del(k)=alpha*del(k-1)
+                     end do
+                     print *, "INCREASE DELTA: ", del
+                     working=.false.
                      cycle inner
                   end if
-               end if
             else 
                working=.false.
                cycle inner
