@@ -2,14 +2,14 @@ subroutine master(numprocs)
 ! Go over the pseudo-arclength continuation loop, distributing concurrent correction steps over processes.
 use globals
 implicit none
-logical :: init_fail,fail,working
+logical :: init_fail,fail,working,hang
 integer :: i,i_max,k,ierr,numprocs,p,nnwt,nkill,accepted
 integer, allocatable, dimension(:) :: list,conv,willconv
 double precision :: z(N+1),T(N+1),th(3),z_prev(N+1),xs(m),alpha,maxdelconv,maxdelwillconv,maxlocation(2),prodconv(numprocs-1),prodwillconv(numprocs-1)
-double precision, allocatable, dimension(:) :: del,r!,prodconv,prodwillconv
+double precision, allocatable, dimension(:) :: del,r,rnew,rtemp,rold!,prodconv,prodwillconv
 double precision, allocatable, dimension(:,:) :: pred,cur
 
-allocate(del(numprocs-1),r(numprocs-1),list(numprocs-1),conv(numprocs-1),willconv(numprocs-1))
+allocate(del(numprocs-1),r(numprocs-1),rnew(numprocs-1),rtemp(numprocs-1),rold(numprocs-1),list(numprocs-1),conv(numprocs-1),willconv(numprocs-1))
 allocate(pred(N+1,numprocs-1),cur(N+1,numprocs-1))
 
 print *,'Master process starting...'
@@ -35,10 +35,12 @@ conv=0d0
 willconv=0d0
 prodconv=0d0
 prodwillconv=0d0
-
+rold=0d0
+rnew=0d0
+rtemp=0d0
 ! Set the initial distribution of step sizes (experiment with this)
-del(1)=5d0
-alpha=1.5d0
+del(1)=0.1d0
+alpha=2.5d0
 if(numprocs.gt.2) then
    do i=2,numprocs-1
       del(i)=alpha*del(i-1)
@@ -79,6 +81,16 @@ inner: do while(working)
         print *, "New DELTA: ", del 
         conv=0d0
         willconv=0d0
+       ! rtemp=0d0
+       ! rnew=0d0        
+        print *, "BEFORE WE ENTER THE LOOP (rold): ", rold, "NEWTON ITERATIONS: ", nnwt
+        if ((nnwt.ge.0).AND.(i.gt.1)) then 
+           do k=1,numprocs-1
+              rtemp(k)=rold(k)
+              r(k)=rold(k)
+           end do 
+        end if
+        print *, "R_TEMP allocated by rold ", rtemp
          ! Send the predictions to the slaves
          do k=1,numprocs-1
             if(list(k).lt.0) cycle
@@ -96,11 +108,29 @@ inner: do while(working)
             call MPI_RECV(r(p),1,MPI_DOUBLE_PRECISION, p, MPI_ANY_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE, ierr)
          end do
          nnwt=nnwt+1
-
+         do k=1,numprocs-1
+            rnew(k)=r(k)
+         end do 
+ !        print *, "R_NEW: ", rnew
       ! Make a decision (experiment and expand this, now written for two slaves only)
       !  First eliminate diverging approximate solutions
          nkill=0
+         rold=0d0
          do k=1,numprocs-1
+            rold(k) = r(k)
+            if ((nnwt.gt.0).AND.(i.gt.1).AND.(hang.eq..True.)) then 
+               if (rnew(k).gt.rtemp(k)) then
+                  !rold(k) = r(k)
+                  print *, "r(k): ", r
+                  r(k) = th(1) + 100
+                  nkill=nkill+1
+                  print *, ""
+                  print *, "KILLED!!!: ", r(k), k
+                  print *, "RNEW: ", rnew, "RTEMP: ", rtemp, "ROLD: ", rold 
+                  print *, ""
+               end if 
+            end if 
+            hang=.False.
             if(r(k).gt.th(1)) then
                list(k)=-1
                nkill=nkill+1
@@ -146,6 +176,7 @@ inner: do while(working)
                print *, "UNSURE ABOUT RESIDUAL"
                print *, "~~~"
                print *, "r: ", r, "maxval(r)", maxval(r), "nkill: ", nkill
+               hang=.True.
                cycle inner
             end if
 
